@@ -11,6 +11,12 @@ use std::sync::Arc;
 pub const F64_MAX_SAFE_INTEGER: f64 = (i64::pow(2, 53) - 1) as f64;
 pub const F64_MIN_SAFE_INTEGER: f64 = -F64_MAX_SAFE_INTEGER;
 
+/// How deep maps and arrays may nest in a value read by [`Any::decode`] (serde_json's limit).
+/// Decoding recurses once per level, so without a limit an update of arrays nested two bytes a
+/// level overflows the thread's stack, which aborts the process; a value that deep would be
+/// dropped by recursion too. A deeper value is [`Error::UnexpectedValue`].
+pub const MAX_DECODE_DEPTH: usize = 128;
+
 /// Any is an enum with a potentially associated value that is used to represent JSON values
 /// and supports efficient encoding of those values.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +43,11 @@ impl Any {
     }
 
     pub fn decode<R: Read>(decoder: &mut R) -> Result<Self, Error> {
+        Self::decode_nested(decoder, 0)
+    }
+
+    /// [`Any::decode`] of a value inside `depth` maps and arrays: at most [`MAX_DECODE_DEPTH`].
+    fn decode_nested<R: Read>(decoder: &mut R, depth: usize) -> Result<Self, Error> {
         Ok(match decoder.read_u8()? {
             // CASE 127: undefined
             127 => Any::Undefined,
@@ -61,6 +72,9 @@ impl Any {
             }
             // CASE 118: Map<string,Any>
             118 => {
+                if depth >= MAX_DECODE_DEPTH {
+                    return Err(Error::UnexpectedValue);
+                }
                 let len: usize = decoder.read_var()?;
                 // `len` is attacker-controlled; a fallible reservation avoids an allocation bomb
                 // (see `Update::decode`'s `try_reserve`).
@@ -68,19 +82,22 @@ impl Any {
                 map.try_reserve(len)?;
                 for _ in 0..len {
                     let key = decoder.read_string()?;
-                    map.insert(key.to_owned(), Any::decode(decoder)?);
+                    map.insert(key.to_owned(), Any::decode_nested(decoder, depth + 1)?);
                 }
                 Any::Map(Arc::new(map))
             }
             // CASE 117: Array<Any>
             117 => {
+                if depth >= MAX_DECODE_DEPTH {
+                    return Err(Error::UnexpectedValue);
+                }
                 let len: usize = decoder.read_var()?;
                 // `len` is attacker-controlled; a fallible reservation avoids an allocation bomb
                 // (see `Update::decode`'s `try_reserve`).
                 let mut arr = Vec::new();
                 arr.try_reserve(len)?;
                 for _ in 0..len {
-                    arr.push(Any::decode(decoder)?);
+                    arr.push(Any::decode_nested(decoder, depth + 1)?);
                 }
                 Any::Array(Arc::from(arr))
             }
@@ -1054,6 +1071,35 @@ mod test {
             Any::decode(&mut cursor).is_err(),
             "an oversized Any::Array length must be rejected, not eagerly allocated"
         );
+    }
+
+    /// `depth` arrays, each holding the next, around an empty one: two bytes a level.
+    fn nested_arrays(depth: usize) -> Vec<u8> {
+        let mut bytes = [117u8, 1].repeat(depth);
+        bytes.extend([117, 0]);
+        bytes
+    }
+
+    #[test]
+    fn decode_reads_nesting_up_to_the_limit() {
+        let bytes = nested_arrays(crate::any::MAX_DECODE_DEPTH - 1);
+        assert!(Any::decode(&mut Cursor::new(&bytes)).is_ok());
+        let bytes = nested_arrays(crate::any::MAX_DECODE_DEPTH);
+        assert!(Any::decode(&mut Cursor::new(&bytes)).is_err());
+    }
+
+    #[test]
+    fn decode_refuses_deep_nesting_without_overflowing_the_stack() {
+        // Regression: decoding recursed once per level with no limit, so this overflowed the
+        // stack, which aborts the process rather than returning an error.
+        let bytes = nested_arrays(1_000_000);
+        let result = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024) // a thread's default
+            .spawn(move || Any::decode(&mut Cursor::new(&bytes)).is_err())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(result, "a value nested past the limit must be rejected");
     }
 
     fn hex(n: Number) -> String {
