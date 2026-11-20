@@ -525,10 +525,10 @@ impl Encode for AwarenessUpdate {
 impl Decode for AwarenessUpdate {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::encoding::read::Error> {
         let len: usize = decoder.read_var()?;
-        // `len` is attacker-controlled (awareness updates arrive over the network); a fallible
-        // reservation avoids an allocation bomb (see `Update::decode`'s `try_reserve`).
+        // `len` is attacker-controlled (awareness updates arrive over the network): reserve at
+        // most `MAX_RESERVE` entries up front
         let mut clients = HashMap::new();
-        clients.try_reserve(len)?;
+        clients.try_reserve(crate::encoding::read::reserve_len(len))?;
         for _ in 0..len {
             let client_id = ClientID::new(decoder.read_var::<u64>()?);
             let clock: u32 = decoder.read_var()?;

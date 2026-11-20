@@ -838,8 +838,9 @@ impl Decode for Update {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
         // read blocks
         let clients_len: u32 = decoder.read_var()?;
+        // the counts are attacker-controlled: reserve at most `MAX_RESERVE` entries up front
         let mut clients = HashMap::with_hasher(BuildHasherDefault::default());
-        clients.try_reserve(clients_len as usize)?;
+        clients.try_reserve(crate::encoding::read::reserve_len(clients_len as usize))?;
 
         let mut blocks = BlockSet { clients };
         for _ in 0..clients_len {
@@ -851,9 +852,7 @@ impl Decode for Update {
                 .clients
                 .entry(client)
                 .or_insert_with(|| VecDeque::new());
-            // Attempt to pre-allocate memory for the blocks. If the capacity overflows and
-            // allocation fails, return an error.
-            blocks.try_reserve(blocks_len)?;
+            blocks.try_reserve(crate::encoding::read::reserve_len(blocks_len))?;
 
             for _ in 0..blocks_len {
                 let id = ID::new(client, clock);
@@ -1093,6 +1092,22 @@ mod test {
         merge_updates_v1, Any, Doc, GetString, IdSet, Options, ReadTxn, StateVector, Text,
         Transact, WriteTxn, XmlFragment, XmlOut, ID,
     };
+
+    #[test]
+    fn decode_reserves_no_more_than_the_input_holds() {
+        use crate::encoding::read::Error;
+        // An update claiming ~4 billion clients, or one client with ~4 billion blocks, runs out of
+        // input; nothing the size of its claim is reserved first (that asked for gigabytes).
+        for claim in [
+            &[0xffu8, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0][..],
+            &[0x01, 0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0][..],
+        ] {
+            assert!(matches!(
+                Update::decode_v1(claim),
+                Err(Error::EndOfBuffer(_))
+            ));
+        }
+    }
 
     #[test]
     fn update_decode() {
