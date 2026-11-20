@@ -117,12 +117,10 @@ impl FromIterator<(ClientID, u32)> for StateVector {
 impl Decode for StateVector {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
         let len = decoder.read_var::<u32>()? as usize;
-        // Attempt to pre-allocate memory for the state vector. `len` is attacker-controlled
-        // (a few bytes can declare a huge count), so a fallible reservation turns an
-        // allocation bomb into a recoverable decode error instead of an abort. Mirrors the
-        // `try_reserve` pattern already used for blocks in `Update::decode`.
+        // `len` is attacker-controlled (a few bytes can declare a huge count): reserve at most
+        // `MAX_RESERVE` entries, fallibly, and grow as entries are read.
         let mut sv = HashMap::with_hasher(BuildHasherDefault::default());
-        sv.try_reserve(len)?;
+        sv.try_reserve(crate::encoding::read::reserve_len(len))?;
         let mut i = 0;
         while i < len {
             let client: u64 = decoder.read_var()?;
@@ -215,9 +213,24 @@ impl Decode for Snapshot {
 mod test {
     use crate::block::ClientID;
     use crate::updates::decoder::Decode;
+    use crate::updates::encoder::Encode;
     use crate::{Doc, ReadTxn, StateVector, Text, Transact, WriteTxn};
     use std::cmp::Ordering;
     use std::iter::FromIterator;
+
+    #[test]
+    fn decode_reserves_no_more_than_the_input_holds() {
+        // A state vector claiming ~4 billion clients in 6 bytes runs out of input; nothing the
+        // size of its claim is reserved first (that took seconds and gigabytes).
+        let claim = [0xffu8, 0xff, 0xff, 0xff, 0x0f, 1];
+        assert!(matches!(
+            StateVector::decode_v1(&claim),
+            Err(crate::encoding::read::Error::EndOfBuffer(_))
+        ));
+        // One past the reservation still decodes.
+        let sv = StateVector::from_iter((1..=1025u64).map(|c| (ClientID::new(c), 1)));
+        assert_eq!(StateVector::decode_v1(&sv.encode_v1()).unwrap(), sv);
+    }
 
     #[test]
     fn decode_rejects_length_amplification() {

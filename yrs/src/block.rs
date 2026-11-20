@@ -2062,7 +2062,7 @@ impl ItemContent {
             BLOCK_ITEM_ANY_REF_NUMBER => {
                 let len = decoder.read_len()? as usize;
                 let mut values = Vec::new();
-                values.try_reserve(len)?;
+                values.try_reserve(crate::encoding::read::reserve_len(len))?;
 
                 let mut i = 0;
                 while i < len {

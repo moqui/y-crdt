@@ -4,6 +4,19 @@ use std::collections::TryReserveError;
 use std::fmt::{Display, Formatter};
 use thiserror::Error;
 
+/// The most entries a decoder reserves up front for a collection whose length it read from the
+/// input. The length is the sender's claim: a few bytes can claim billions of entries, and even a
+/// reservation the allocator grants costs that much time and memory (a hash map initializes its
+/// control bytes) before the input runs out. A collection that decodes holds exactly the entries
+/// it claimed, so a larger one grows as it reads them, each taking at least a byte of input.
+pub(crate) const MAX_RESERVE: usize = 1024;
+
+/// What to reserve for a collection the input claims holds `len` entries ([`MAX_RESERVE`]).
+#[inline]
+pub(crate) fn reserve_len(len: usize) -> usize {
+    len.min(MAX_RESERVE)
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("failed to decode variable length integer")]

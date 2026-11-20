@@ -62,10 +62,9 @@ impl Any {
             // CASE 118: Map<string,Any>
             118 => {
                 let len: usize = decoder.read_var()?;
-                // `len` is attacker-controlled; a fallible reservation avoids an allocation bomb
-                // (see `Update::decode`'s `try_reserve`).
+                // `len` is attacker-controlled: reserve at most `MAX_RESERVE` entries up front
                 let mut map = HashMap::new();
-                map.try_reserve(len)?;
+                map.try_reserve(crate::encoding::read::reserve_len(len))?;
                 for _ in 0..len {
                     let key = decoder.read_string()?;
                     map.insert(key.to_owned(), Any::decode(decoder)?);
@@ -75,10 +74,9 @@ impl Any {
             // CASE 117: Array<Any>
             117 => {
                 let len: usize = decoder.read_var()?;
-                // `len` is attacker-controlled; a fallible reservation avoids an allocation bomb
-                // (see `Update::decode`'s `try_reserve`).
+                // `len` is attacker-controlled: reserve at most `MAX_RESERVE` entries up front
                 let mut arr = Vec::new();
-                arr.try_reserve(len)?;
+                arr.try_reserve(crate::encoding::read::reserve_len(len))?;
                 for _ in 0..len {
                     arr.push(Any::decode(decoder)?);
                 }
